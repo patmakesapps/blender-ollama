@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Ollama Chat Assistant",
     "author": "Patrick Kearney",
-    "version": (0, 8, 1),
+    "version": (0, 8, 2),
     "blender": (3, 6, 0),
     "location": "View3D > Sidebar > Ollama",
     "description": "Launch a companion assistant app from inside Blender",

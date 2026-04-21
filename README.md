@@ -1,115 +1,144 @@
-# Blender Assistant
+# LumaBlend
 
-A Blender addon that opens a clean, full-size chat companion app in your browser — scene-aware, with support for OpenAI, Anthropic, and Ollama.
+A Blender addon that opens a polished browser-based companion app for scene-aware chat, image input, and approval-based Python execution inside Blender.
 
-The addon itself is thin. The chat UI lives in a proper browser window where it can actually feel polished. Blender stays the bridge: it pushes scene context (active object, selection, mode, etc.) to the companion app so your chats know what you're working on.
+The addon stays lightweight inside Blender. The full chat experience runs in your browser, while Blender keeps feeding scene context to the companion app so the model understands what you are working on.
+
+![LumaBlend hero](public/lumablend_hero.png)
 
 ---
 
-## Quick Start (under 5 minutes)
+## Quick Start
 
 ### 1. Download the addon
 
-Grab the latest zip from the [Releases page](https://github.com/patmakesapps/blender-ollama/releases) — for example `blender-ollama-v0.8.1-test.zip`.
+Grab the latest zip from the [Releases page](https://github.com/patmakesapps/blender-ollama/releases) - for example `blender-ollama-v0.8.2-test.zip`.
 
-**Don't unzip it.** Blender installs it as-is.
+Do not unzip it. Blender installs the zip directly.
 
 ### 2. Install it in Blender
 
 1. Open Blender.
-2. `Edit` → `Preferences` → `Add-ons`.
-3. Click `Install...` (top right).
-4. Select the zip you downloaded.
-5. Tick the checkbox next to **Ollama Chat Assistant** to enable it.
+2. Go to `Edit > Preferences > Add-ons`.
+3. Click `Install...`.
+4. Choose the downloaded zip.
+5. Enable **Ollama Chat Assistant**.
 
-### 3. Open the assistant
+### 3. Open the companion
 
-1. In the 3D Viewport, press `N` to open the sidebar.
-2. Click the `Ollama` tab.
+1. In the 3D Viewport, press `N` to open the right sidebar.
+2. Open the `Ollama` tab.
 3. Click **Open Assistant**.
 
-This starts a small local server on `http://127.0.0.1:8767` and opens your browser.
+This starts a small local server on `http://127.0.0.1:8767` and opens the LumaBlend chat app in your default browser.
 
-### 4. Pick a provider and go
+### 4. Pick a provider
 
-Click **Settings** in the sidebar of the chat app, pick one of:
+Open **Settings** in the chat app sidebar and choose one of:
 
-- **OpenAI** — paste your API key, pick a model (default `gpt-5`), Save.
-- **Anthropic** — paste your API key, pick a model, Save.
-- **Ollama** — no key needed. Make sure Ollama is running locally and the model name matches one you've pulled (e.g. `ollama pull llama3.2:3b`).
+- **OpenAI** - paste your API key and use the default `gpt-5` model or change it.
+- **Anthropic** - paste your API key and choose your Claude model.
+- **Ollama** - no API key needed. Make sure Ollama is running locally and the model name matches one you have pulled.
 
-API keys are saved to `~/.blender-ollama/config.json` on your machine — not sent anywhere except the provider you picked.
-
-Close the Settings modal and start chatting.
+Keys are stored locally in `~/.blender-ollama/config.json`.
 
 ---
 
-## Provider Setup Details
+## Screenshots
+
+### Main Chat UI
+
+![Main chat UI](public/chat_ui1.png)
+
+### Composer And Layout
+
+![Composer and layout](public/uipic2.png)
+
+### Settings Modal
+
+![Settings modal](public/settingui.png)
+
+---
+
+## What It Does
+
+- Browser-based chat UI branded as **LumaBlend**
+- Scene-aware prompts from the active Blender session
+- SQLite-backed persistent chats in `~/.blender-ollama/chats.db`
+- Image paste and image attach support in the composer
+- Approval cards before model-generated Blender Python executes
+- OpenAI, Anthropic, and Ollama provider support
+
+---
+
+## Using The App
+
+- **+ New Chat** starts a fresh conversation.
+- **Chat list** lets you reopen previous conversations.
+- **Enter** sends and **Shift+Enter** inserts a newline.
+- **Paste images directly** into the composer or use the paperclip button.
+- **Run in Blender** cards appear when the model wants to execute Python in Blender.
+- Chats persist in SQLite, so browser refreshes do not wipe them.
+
+---
+
+## Provider Setup
 
 ### OpenAI
 
 1. Get a key at https://platform.openai.com/api-keys
-2. Settings → OpenAI → paste key → Save
-3. Default model is `gpt-5`; change it to whatever you have access to
+2. Open Settings in LumaBlend.
+3. Select `OpenAI`.
+4. Paste the key and save.
 
 ### Anthropic
 
 1. Get a key at https://console.anthropic.com/settings/keys
-2. Settings → Anthropic → paste key → Save
-3. Default model is `claude-sonnet-4-20250514`; change as needed
+2. Open Settings in LumaBlend.
+3. Select `Anthropic`.
+4. Paste the key and save.
 
-### Ollama (runs locally, no API key)
+### Ollama
 
-1. Install from https://ollama.com/
-2. Pull a model:
-   ```
-   ollama pull llama3.2:3b
-   ```
-3. Make sure the Ollama app/service is running.
-4. Settings → Ollama → set the model name to exactly what you pulled → Save.
+1. Install Ollama from https://ollama.com/
+2. Pull a model, for example:
 
----
+```text
+ollama pull llama3.2:3b
+```
 
-## Using the App
+3. Make sure Ollama is running.
+4. In Settings, set the model name to exactly what you pulled.
 
-- **+ New Chat** — start a fresh conversation. Each chat has its own history.
-- **Chat list** — click any chat in the sidebar to jump back to it. Hover and click `×` to delete.
-- **Enter** sends, **Shift+Enter** adds a newline.
-- **Images** — paste screenshots directly into the composer or use the attach button.
-- **Run in Blender** — when the model wants to execute Python, you'll see an approval card before anything runs.
-- Chats now persist in SQLite at `~/.blender-ollama/chats.db`, so they survive browser refreshes and cleared site data.
+For tool execution, use a tool-capable Ollama model. For image input, use a vision-capable model.
 
 ---
 
 ## How It Works
 
-1. You click **Open Assistant** in Blender.
-2. The addon launches `companion/server.py` (a tiny Python HTTP server) in the background.
-3. Your browser opens `http://127.0.0.1:8767`.
-4. Every time you click Open Assistant, the addon POSTs the current scene context to the companion.
-5. Your messages go to OpenAI / Anthropic / Ollama with that scene context attached as system info.
+1. Blender launches `companion/server.py`.
+2. The browser opens `http://127.0.0.1:8767`.
+3. Blender POSTs scene context to the companion app.
+4. Your conversation is stored in SQLite at `~/.blender-ollama/chats.db`.
+5. If the model wants to run Blender Python, the UI shows an approval card first.
+6. Approved code executes inside the active Blender session through the local executor bridge.
 
 ---
 
 ## Troubleshooting
 
-- **"The companion app did not start in time"** — another process is probably on port `8767`. Close it, or restart Blender.
-- **"Failed to fetch" errors in the chat** — usually means your API key is missing or wrong, or Ollama isn't running. Open Settings and verify.
-- **Ollama says a model isn't available** — `ollama list` to see what you have, then match the name exactly in Settings.
-- **Chats disappeared** — check `~/.blender-ollama/chats.db` and confirm the companion app is running from the same user profile.
+- **The companion app did not start in time**: another process is probably using port `8767`.
+- **Failed to fetch**: your API key is missing, invalid, or Ollama is not running.
+- **Model not available in Ollama**: run `ollama list` and match the exact model name in Settings.
+- **Chats missing**: check `~/.blender-ollama/chats.db` and make sure you launched the addon from the same user profile.
+- **Python execution does nothing**: make sure Blender is still open with the addon enabled so the executor is reachable on `127.0.0.1:8766`.
 
 ---
 
 ## Notes
 
-- Companion server runs locally on `http://127.0.0.1:8767`. Nothing is exposed to the network.
-- API keys stored in `~/.blender-ollama/config.json`.
-- Chats stored in `~/.blender-ollama/chats.db`.
-- Scene context pushed: scene name, active object, selected objects, object count, mode.
-- Image input is supported in the browser UI.
-- Python execution is approval-based and runs inside the active Blender session.
+- The companion server is local-only and is not exposed to the public internet.
+- API keys are stored in `~/.blender-ollama/config.json`.
+- Chats are stored in `~/.blender-ollama/chats.db`.
+- Scene context includes scene name, active object, selected objects, object count, and mode.
 
-## Roadmap
-
-- Screenshot capture from Blender into the companion app
-- File- and asset-aware assistance

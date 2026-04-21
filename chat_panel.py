@@ -11,7 +11,7 @@ import bpy
 from bpy.types import Operator, Panel
 
 
-COMPANION_URL = "http://127.0.0.1:8765"
+COMPANION_URL = "http://127.0.0.1:8767"
 COMPANION_TIMEOUT_SECONDS = 8
 
 
@@ -35,7 +35,7 @@ class OllamaChatPanel(Panel):
         notes.label(text="What it does:")
         notes.label(text="- Opens the premium chat UI in your browser")
         notes.label(text="- Sends scene context from Blender")
-        notes.label(text="- Supports OpenAI and Ollama in one app")
+        notes.label(text="- Supports OpenAI, Anthropic, and Ollama")
 
 
 class OllamaOpenCompanion(Operator):

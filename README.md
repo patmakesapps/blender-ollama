@@ -10,7 +10,7 @@ The addon itself is thin. The chat UI lives in a proper browser window where it 
 
 ### 1. Download the addon
 
-Grab the latest zip from the [Releases page](https://github.com/patmakesapps/blender-ollama/releases) — for example `blender-ollama-v0.7.1-test.zip`.
+Grab the latest zip from the [Releases page](https://github.com/patmakesapps/blender-ollama/releases) — for example `blender-ollama-v0.8.1-test.zip`.
 
 **Don't unzip it.** Blender installs it as-is.
 
@@ -28,7 +28,7 @@ Grab the latest zip from the [Releases page](https://github.com/patmakesapps/ble
 2. Click the `Ollama` tab.
 3. Click **Open Assistant**.
 
-This starts a small local server on `http://127.0.0.1:8765` and opens your browser.
+This starts a small local server on `http://127.0.0.1:8767` and opens your browser.
 
 ### 4. Pick a provider and go
 
@@ -75,7 +75,9 @@ Close the Settings modal and start chatting.
 - **+ New Chat** — start a fresh conversation. Each chat has its own history.
 - **Chat list** — click any chat in the sidebar to jump back to it. Hover and click `×` to delete.
 - **Enter** sends, **Shift+Enter** adds a newline.
-- Chats are stored in your browser's `localStorage` for `http://127.0.0.1:8765` — clearing site data wipes them. They're not synced.
+- **Images** — paste screenshots directly into the composer or use the attach button.
+- **Run in Blender** — when the model wants to execute Python, you'll see an approval card before anything runs.
+- Chats now persist in SQLite at `~/.blender-ollama/chats.db`, so they survive browser refreshes and cleared site data.
 
 ---
 
@@ -83,7 +85,7 @@ Close the Settings modal and start chatting.
 
 1. You click **Open Assistant** in Blender.
 2. The addon launches `companion/server.py` (a tiny Python HTTP server) in the background.
-3. Your browser opens `http://127.0.0.1:8765`.
+3. Your browser opens `http://127.0.0.1:8767`.
 4. Every time you click Open Assistant, the addon POSTs the current scene context to the companion.
 5. Your messages go to OpenAI / Anthropic / Ollama with that scene context attached as system info.
 
@@ -91,23 +93,23 @@ Close the Settings modal and start chatting.
 
 ## Troubleshooting
 
-- **"The companion app did not start in time"** — another process is probably on port `8765`. Close it, or restart Blender.
+- **"The companion app did not start in time"** — another process is probably on port `8767`. Close it, or restart Blender.
 - **"Failed to fetch" errors in the chat** — usually means your API key is missing or wrong, or Ollama isn't running. Open Settings and verify.
 - **Ollama says a model isn't available** — `ollama list` to see what you have, then match the name exactly in Settings.
-- **Chats disappeared** — you cleared browser site data for `127.0.0.1:8765`. There's no server-side copy.
+- **Chats disappeared** — check `~/.blender-ollama/chats.db` and confirm the companion app is running from the same user profile.
 
 ---
 
 ## Notes
 
-- Companion server runs locally on `http://127.0.0.1:8765`. Nothing is exposed to the network.
+- Companion server runs locally on `http://127.0.0.1:8767`. Nothing is exposed to the network.
 - API keys stored in `~/.blender-ollama/config.json`.
+- Chats stored in `~/.blender-ollama/chats.db`.
 - Scene context pushed: scene name, active object, selected objects, object count, mode.
-- Text-only today. It doesn't execute Blender operations yet.
+- Image input is supported in the browser UI.
+- Python execution is approval-based and runs inside the active Blender session.
 
 ## Roadmap
 
 - Screenshot capture from Blender into the companion app
-- Action buttons that trigger Blender operations from chat
-- Persistent chat sessions tied to the current `.blend` file
 - File- and asset-aware assistance

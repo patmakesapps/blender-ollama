@@ -1,12 +1,10 @@
-const STORAGE_KEY = "lumakit-chats-v1";
-const ACTIVE_KEY = "lumakit-active-chat";
-
 const state = {
   chats: [],
   activeId: null,
+  messages: [],
   settings: null,
   sending: false,
-  sceneContext: null,
+  pendingImages: [],
 };
 
 const el = {
@@ -16,6 +14,9 @@ const el = {
   messages: document.getElementById("message-list"),
   input: document.getElementById("composer-input"),
   sendBtn: document.getElementById("send-button"),
+  attachBtn: document.getElementById("attach-btn"),
+  fileInput: document.getElementById("file-input"),
+  imagePreview: document.getElementById("image-preview"),
   modelPillText: document.getElementById("model-pill-text"),
   settingsModal: document.getElementById("settings-modal"),
   settingsError: document.getElementById("settings-error"),
@@ -29,112 +30,376 @@ const el = {
   anthropicKey: document.getElementById("anthropic-api-key"),
 };
 
-function uid() {
-  return Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `${res.status} ${res.statusText}`);
+  return data;
 }
 
-function loadChats() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) state.chats = JSON.parse(raw);
-  } catch {}
-  state.activeId = localStorage.getItem(ACTIVE_KEY);
+async function boot() {
+  bind();
+  await loadSettings();
+  await loadChats();
   if (!state.chats.length) {
-    createChat();
-  } else if (!state.chats.find((c) => c.id === state.activeId)) {
+    await createChat();
+  } else {
     state.activeId = state.chats[0].id;
+    await loadMessages();
+    renderAll();
+  }
+  updateSendBtn();
+}
+
+function bind() {
+  el.newChat.addEventListener("click", createChat);
+  el.sendBtn.addEventListener("click", sendMessage);
+  el.attachBtn.addEventListener("click", () => el.fileInput.click());
+  el.fileInput.addEventListener("change", handleFilePick);
+  el.openSettings.addEventListener("click", openSettings);
+  el.saveSettings.addEventListener("click", saveSettings);
+
+  el.input.addEventListener("input", () => {
+    autosize();
+    updateSendBtn();
+  });
+  el.input.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      sendMessage();
+    }
+  });
+  el.input.addEventListener("paste", handlePaste);
+
+  el.providerSwitch.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-provider]");
+    if (!button || !state.settings) return;
+    state.settings.provider = button.dataset.provider;
+    renderProviderPanels();
+    renderModelPill();
+  });
+
+  el.settingsModal.addEventListener("click", (event) => {
+    if (event.target.hasAttribute("data-close")) closeSettings();
+  });
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !el.settingsModal.classList.contains("hidden")) {
+      closeSettings();
+    }
+  });
+}
+
+async function loadSettings() {
+  try {
+    const payload = await api("/api/state");
+    state.settings = payload.settings;
+    renderSettings();
+    renderModelPill();
+  } catch {
+    state.settings = {
+      provider: "openai",
+      openai_model: "gpt-5",
+      anthropic_model: "claude-sonnet-4-20250514",
+      ollama_model: "llama3.1:8b",
+    };
   }
 }
 
-function persist() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.chats));
-  if (state.activeId) localStorage.setItem(ACTIVE_KEY, state.activeId);
+async function loadChats() {
+  const payload = await api("/api/chats");
+  state.chats = payload.chats || [];
 }
 
-function activeChat() {
-  return state.chats.find((c) => c.id === state.activeId);
+async function loadMessages() {
+  if (!state.activeId) {
+    state.messages = [];
+    return;
+  }
+  const payload = await api(`/api/chats/${state.activeId}/messages`);
+  state.messages = payload.messages || [];
 }
 
-function createChat() {
-  const chat = { id: uid(), title: "New Chat", messages: [], createdAt: Date.now() };
-  state.chats.unshift(chat);
-  state.activeId = chat.id;
-  persist();
-  renderChatList();
-  renderMessages();
-  renderTitle();
+async function createChat() {
+  const payload = await api("/api/chats", { method: "POST", body: "{}" });
+  state.activeId = payload.chat.id;
+  await loadChats();
+  await loadMessages();
+  renderAll();
   el.input.focus();
 }
 
-function deleteChat(id) {
-  state.chats = state.chats.filter((c) => c.id !== id);
-  if (state.activeId === id) {
-    state.activeId = state.chats[0]?.id || null;
+async function deleteChat(id) {
+  await api(`/api/chats/${id}`, { method: "DELETE" });
+  if (state.activeId === id) state.activeId = null;
+  await loadChats();
+  if (!state.chats.length) {
+    await createChat();
+    return;
   }
-  if (!state.chats.length) createChat();
-  persist();
-  renderChatList();
-  renderMessages();
-  renderTitle();
+  if (!state.activeId) state.activeId = state.chats[0].id;
+  await loadMessages();
+  renderAll();
 }
 
-function selectChat(id) {
+async function selectChat(id) {
+  if (state.activeId === id) return;
   state.activeId = id;
-  persist();
-  renderChatList();
+  await loadMessages();
+  renderAll();
+}
+
+async function sendMessage() {
+  if (state.sending) return;
+  const text = el.input.value.trim();
+  const images = state.pendingImages.slice();
+  if (!text && !images.length) return;
+
+  state.sending = true;
+  el.input.value = "";
+  state.pendingImages = [];
+  autosize();
+  renderImagePreview();
+  updateSendBtn();
+
+  state.messages.push({
+    id: `tmp-user-${Date.now()}`,
+    role: "user",
+    content: text,
+    images,
+  });
+  state.messages.push({
+    id: `tmp-pending-${Date.now()}`,
+    role: "assistant",
+    content: "Thinking...",
+    _pending: true,
+  });
   renderMessages();
+
+  try {
+    const payload = await api(`/api/chats/${state.activeId}/send`, {
+      method: "POST",
+      body: JSON.stringify({ text, images }),
+    });
+    state.messages = payload.messages || [];
+    await loadChats();
+    renderChatList();
+    renderTitle();
+  } catch (error) {
+    state.messages = state.messages.filter((message) => !message._pending);
+    state.messages.push({
+      id: `err-${Date.now()}`,
+      role: "assistant",
+      content: `Error: ${error.message}`,
+      _error: true,
+    });
+  } finally {
+    state.sending = false;
+    renderMessages();
+    updateSendBtn();
+  }
+}
+
+async function resolveToolCalls(resolutions) {
+  if (state.sending) return;
+  state.sending = true;
+  updateSendBtn();
+
+  state.messages.push({
+    id: `tmp-tool-${Date.now()}`,
+    role: "assistant",
+    content: "Running...",
+    _pending: true,
+  });
+  renderMessages();
+
+  try {
+    const payload = await api(`/api/chats/${state.activeId}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ resolutions }),
+    });
+    state.messages = payload.messages || [];
+  } catch (error) {
+    state.messages = state.messages.filter((message) => !message._pending);
+    state.messages.push({
+      id: `err-${Date.now()}`,
+      role: "assistant",
+      content: `Error: ${error.message}`,
+      _error: true,
+    });
+  } finally {
+    state.sending = false;
+    renderMessages();
+    updateSendBtn();
+  }
+}
+
+function renderAll() {
+  renderChatList();
   renderTitle();
+  renderMessages();
 }
 
 function renderChatList() {
   el.chatList.innerHTML = "";
   for (const chat of state.chats) {
     const item = document.createElement("button");
-    item.className = "chat-item" + (chat.id === state.activeId ? " active" : "");
-    item.innerHTML = `<span class="chat-item-title"></span><span class="chat-item-close" aria-label="Delete">×</span>`;
+    item.className = `chat-item${chat.id === state.activeId ? " active" : ""}`;
+    item.innerHTML =
+      '<span class="chat-item-title"></span><span class="chat-item-close" aria-label="Delete">x</span>';
     item.querySelector(".chat-item-title").textContent = chat.title || "New Chat";
-    item.addEventListener("click", (e) => {
-      if (e.target.classList.contains("chat-item-close")) {
-        e.stopPropagation();
-        deleteChat(chat.id);
+    item.addEventListener("click", (event) => {
+      if (event.target.classList.contains("chat-item-close")) {
+        event.stopPropagation();
+        void deleteChat(chat.id);
         return;
       }
-      selectChat(chat.id);
+      void selectChat(chat.id);
     });
     el.chatList.appendChild(item);
   }
 }
 
 function renderTitle() {
-  const chat = activeChat();
+  const chat = state.chats.find((item) => item.id === state.activeId);
   el.chatTitle.textContent = chat?.title || "New Chat";
 }
 
 function renderMessages() {
   el.messages.innerHTML = "";
-  const chat = activeChat();
-  if (!chat || !chat.messages.length) {
+
+  const toolResultsByCallId = new Map();
+  for (const message of state.messages) {
+    if (message.role === "tool" && message.tool_call_id) {
+      toolResultsByCallId.set(message.tool_call_id, message);
+    }
+  }
+
+  const visibleMessages = state.messages.filter((message) => message.role !== "tool");
+  if (!visibleMessages.length) {
     const empty = document.createElement("div");
     empty.className = "empty-hint";
-    empty.innerHTML = `<h3>How can I help with Blender?</h3><p>Ask about modeling, modifiers, materials, animation, scripting, or your current scene.</p>`;
+    empty.innerHTML =
+      "<h3>How can I help with Blender?</h3><p>Ask about modeling, modifiers, materials, animation, scripting, images, or have me run Python for you.</p>";
     el.messages.appendChild(empty);
     return;
   }
 
-  for (const m of chat.messages) {
+  for (const message of visibleMessages) {
     const wrap = document.createElement("div");
-    wrap.className = "msg " + m.role + (m.state ? " " + m.state : "");
-    const bubble = document.createElement("div");
-    bubble.className = "msg-bubble";
-    bubble.innerHTML = renderContent(m.content);
-    wrap.appendChild(bubble);
+    wrap.className = `msg ${message.role}${message._pending ? " pending" : ""}${message._error ? " error" : ""}`;
+
+    if (message.images?.length) {
+      const imageRow = document.createElement("div");
+      imageRow.className = "msg-images";
+      for (const src of message.images) {
+        const img = document.createElement("img");
+        img.src = src;
+        img.alt = "User attachment";
+        imageRow.appendChild(img);
+      }
+      wrap.appendChild(imageRow);
+    }
+
+    if (message.content) {
+      const bubble = document.createElement("div");
+      bubble.className = "msg-bubble";
+      bubble.innerHTML = renderMarkdown(message.content);
+      wrap.appendChild(bubble);
+    }
+
+    if (message.role === "assistant" && message.tool_calls?.length) {
+      for (const toolCall of message.tool_calls) {
+        wrap.appendChild(renderToolCard(toolCall, toolResultsByCallId.get(toolCall.id)));
+      }
+    }
+
     el.messages.appendChild(wrap);
   }
+
   el.messages.scrollTop = el.messages.scrollHeight;
 }
 
-function renderContent(text) {
-  const escape = (s) => s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+function renderToolCard(toolCall, resolved) {
+  const card = document.createElement("div");
+  card.className = "tool-card";
+
+  let args = {};
+  try {
+    args = JSON.parse(toolCall.arguments || "{}");
+  } catch {}
+
+  const head = document.createElement("div");
+  head.className = "tool-card-head";
+  head.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg><span class="tool-card-title">Run in Blender</span>';
+
+  const explanation = document.createElement("p");
+  explanation.className = "tool-card-explanation";
+  explanation.textContent = args.explanation || "Run Python in Blender";
+
+  const pre = document.createElement("pre");
+  pre.className = "tool-card-code";
+  const code = document.createElement("code");
+  code.textContent = args.code || "";
+  pre.appendChild(code);
+
+  card.appendChild(head);
+  card.appendChild(explanation);
+  card.appendChild(pre);
+
+  if (!resolved) {
+    const actions = document.createElement("div");
+    actions.className = "tool-card-actions";
+
+    const approve = document.createElement("button");
+    approve.className = "primary-btn small";
+    approve.textContent = "Approve and run";
+    approve.addEventListener("click", () => void resolveToolCalls([{ id: toolCall.id, approved: true }]));
+
+    const reject = document.createElement("button");
+    reject.className = "ghost-btn small";
+    reject.textContent = "Reject";
+    reject.addEventListener("click", () => void resolveToolCalls([{ id: toolCall.id, approved: false }]));
+
+    actions.appendChild(approve);
+    actions.appendChild(reject);
+    card.appendChild(actions);
+  } else {
+    const status = document.createElement("div");
+    const ok = resolved.tool_approved && !/Execution failed/.test(resolved.tool_output || "");
+    status.className = `tool-card-status ${ok ? "ok" : "fail"}`;
+    status.textContent = resolved.tool_approved
+      ? ok
+        ? "Ran successfully"
+        : "Ran with errors"
+      : "Declined";
+    card.appendChild(status);
+
+    if (resolved.tool_output) {
+      const output = document.createElement("pre");
+      output.className = "tool-card-output";
+      output.textContent = resolved.tool_output;
+      card.appendChild(output);
+    }
+  }
+
+  return card;
+}
+
+function renderMarkdown(text) {
+  const escape = (value) =>
+    value.replace(/[&<>"']/g, (char) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[char]));
+
   let out = "";
   const parts = text.split(/(```[\s\S]*?```)/g);
   for (const part of parts) {
@@ -142,54 +407,57 @@ function renderContent(text) {
       const body = part.slice(3, -3).replace(/^[a-zA-Z0-9_-]*\n/, "");
       out += `<pre><code>${escape(body)}</code></pre>`;
     } else {
-      let seg = escape(part);
-      seg = seg.replace(/`([^`\n]+)`/g, "<code>$1</code>");
-      seg = seg.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
-      out += seg;
+      let segment = escape(part);
+      segment = segment.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+      segment = segment.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+      out += segment;
     }
   }
   return out;
 }
 
-async function loadState() {
-  try {
-    const res = await fetch("/api/state");
-    const payload = await res.json();
-    state.sceneContext = payload.scene_context;
-    state.settings = payload.settings;
-    renderSettings();
-    renderModelPill();
-  } catch {}
-}
-
 function renderSettings() {
-  const s = state.settings || {};
-  state.settings.provider = s.provider || "openai";
-  el.openaiModel.value = s.openai_model || "gpt-5";
-  el.anthropicModel.value = s.anthropic_model || "claude-sonnet-4-20250514";
-  el.ollamaModel.value = s.ollama_model || "ministral-3:14b-cloud";
-  el.openaiKey.placeholder = s.openai_api_key_configured ? "API key saved locally" : "Paste an API key to enable OpenAI";
-  el.anthropicKey.placeholder = s.anthropic_api_key_configured ? "API key saved locally" : "Paste an API key to enable Anthropic";
+  const settings = state.settings || {};
+  state.settings.provider = settings.provider || "openai";
+  el.openaiModel.value = settings.openai_model || "gpt-5";
+  el.anthropicModel.value = settings.anthropic_model || "claude-sonnet-4-20250514";
+  el.ollamaModel.value = settings.ollama_model || "llama3.1:8b";
+  el.openaiKey.placeholder = settings.openai_api_key_configured
+    ? "API key saved locally"
+    : "Paste an API key to enable OpenAI";
+  el.anthropicKey.placeholder = settings.anthropic_api_key_configured
+    ? "API key saved locally"
+    : "Paste an API key to enable Anthropic";
   renderProviderPanels();
 }
 
 function renderProviderPanels() {
-  const p = state.settings?.provider || "openai";
-  document.querySelectorAll(".provider-chip").forEach((b) => b.classList.toggle("active", b.dataset.provider === p));
-  document.querySelectorAll(".provider-panel").forEach((panel) => panel.classList.toggle("hidden", panel.dataset.panel !== p));
+  const provider = state.settings?.provider || "openai";
+  document.querySelectorAll(".provider-chip").forEach((button) => {
+    button.classList.toggle("active", button.dataset.provider === provider);
+  });
+  document.querySelectorAll(".provider-panel").forEach((panel) => {
+    panel.classList.toggle("hidden", panel.dataset.panel !== provider);
+  });
 }
 
 function renderModelPill() {
-  const s = state.settings || {};
-  const p = s.provider || "openai";
-  const model = p === "openai" ? s.openai_model : p === "anthropic" ? s.anthropic_model : s.ollama_model;
-  el.modelPillText.textContent = model || p;
+  const settings = state.settings || {};
+  const provider = settings.provider || "openai";
+  const model =
+    provider === "openai"
+      ? settings.openai_model
+      : provider === "anthropic"
+        ? settings.anthropic_model
+        : settings.ollama_model;
+  el.modelPillText.textContent = model || provider;
 }
 
-function showSettingsError(msg) {
-  el.settingsError.textContent = msg;
+function showSettingsError(message) {
+  el.settingsError.textContent = message;
   el.settingsError.classList.remove("hidden");
 }
+
 function clearSettingsError() {
   el.settingsError.classList.add("hidden");
   el.settingsError.textContent = "";
@@ -197,160 +465,127 @@ function clearSettingsError() {
 
 async function saveSettings() {
   clearSettingsError();
-  const provider = state.settings.provider;
-  const s = state.settings || {};
 
+  const provider = state.settings.provider;
+  const settings = state.settings || {};
   if (provider === "openai") {
-    const hasKey = el.openaiKey.value.trim() || s.openai_api_key_configured;
+    const hasKey = el.openaiKey.value.trim() || settings.openai_api_key_configured;
     if (!hasKey) {
-      showSettingsError("OpenAI requires an API key. Paste one above to continue, or switch to Ollama for a local option.");
+      showSettingsError("OpenAI requires an API key. Paste one above or switch providers.");
       return;
     }
   }
   if (provider === "anthropic") {
-    const hasKey = el.anthropicKey.value.trim() || s.anthropic_api_key_configured;
+    const hasKey = el.anthropicKey.value.trim() || settings.anthropic_api_key_configured;
     if (!hasKey) {
-      showSettingsError("Anthropic requires an API key. Paste one above to continue, or switch to Ollama for a local option.");
+      showSettingsError("Anthropic requires an API key. Paste one above or switch providers.");
       return;
     }
   }
 
-  const payload = {
-    provider,
-    openai_model: el.openaiModel.value.trim(),
-    anthropic_model: el.anthropicModel.value.trim(),
-    ollama_model: el.ollamaModel.value.trim(),
-    openai_api_key: el.openaiKey.value.trim(),
-    anthropic_api_key: el.anthropicKey.value.trim(),
-  };
-  const res = await fetch("/api/settings", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    showSettingsError(data.error || "Could not save settings");
-    return;
-  }
-  state.settings = data.settings;
-  el.openaiKey.value = "";
-  el.anthropicKey.value = "";
-  renderSettings();
-  renderModelPill();
-  closeSettings();
-}
-
-async function sendMessage() {
-  if (state.sending) return;
-  const content = el.input.value.trim();
-  if (!content) return;
-
-  const chat = activeChat();
-  if (!chat) return;
-
-  state.sending = true;
-  updateSendBtn();
-
-  if (!chat.messages.length) {
-    chat.title = content.slice(0, 40) + (content.length > 40 ? "…" : "");
-    renderTitle();
-    renderChatList();
-  }
-
-  const userMsg = { role: "user", content };
-  const pending = { role: "assistant", content: "Thinking…", state: "pending" };
-  chat.messages.push(userMsg, pending);
-  el.input.value = "";
-  autosize();
-  persist();
-  renderMessages();
-
-  const s = state.settings || {};
-  const provider = s.provider;
-  const model = provider === "openai" ? el.openaiModel.value.trim() : provider === "anthropic" ? el.anthropicModel.value.trim() : el.ollamaModel.value.trim();
-
   try {
-    const res = await fetch("/api/chat", {
+    const payload = await api("/api/settings", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         provider,
-        model,
-        messages: chat.messages.filter((m) => m.state !== "pending"),
+        openai_model: el.openaiModel.value.trim(),
+        anthropic_model: el.anthropicModel.value.trim(),
+        ollama_model: el.ollamaModel.value.trim(),
+        openai_api_key: el.openaiKey.value.trim(),
+        anthropic_api_key: el.anthropicKey.value.trim(),
       }),
     });
-    const payload = await res.json();
-    if (!res.ok) throw new Error(payload.error || "Request failed");
-    pending.content = payload.content;
-    pending.state = "done";
-  } catch (e) {
-    pending.content = `Error: ${e.message}`;
-    pending.state = "error";
-  } finally {
-    state.sending = false;
-    persist();
-    renderMessages();
-    updateSendBtn();
+    state.settings = payload.settings;
+    el.openaiKey.value = "";
+    el.anthropicKey.value = "";
+    renderSettings();
+    renderModelPill();
+    closeSettings();
+  } catch (error) {
+    showSettingsError(error.message || "Could not save settings");
   }
 }
 
-function updateSendBtn() {
-  el.sendBtn.disabled = state.sending || !el.input.value.trim();
+function openSettings() {
+  clearSettingsError();
+  el.settingsModal.classList.remove("hidden");
+}
+
+function closeSettings() {
+  el.settingsModal.classList.add("hidden");
 }
 
 function autosize() {
   el.input.style.height = "auto";
-  el.input.style.height = Math.min(el.input.scrollHeight, 200) + "px";
+  el.input.style.height = `${Math.min(el.input.scrollHeight, 200)}px`;
 }
 
-function openSettings() { clearSettingsError(); el.settingsModal.classList.remove("hidden"); }
-function closeSettings() { el.settingsModal.classList.add("hidden"); }
+function updateSendBtn() {
+  const hasContent = Boolean(el.input.value.trim() || state.pendingImages.length);
+  el.sendBtn.disabled = state.sending || !hasContent;
+}
 
-function bind() {
-  el.newChat.addEventListener("click", createChat);
-  el.sendBtn.addEventListener("click", sendMessage);
-  el.input.addEventListener("input", () => { autosize(); updateSendBtn(); });
-  el.input.addEventListener("keydown", (ev) => {
-    if (ev.key === "Enter" && !ev.shiftKey) {
-      ev.preventDefault();
-      sendMessage();
+function handlePaste(event) {
+  const items = event.clipboardData?.items || [];
+  const images = [];
+  for (const item of items) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) images.push(file);
     }
-  });
-  el.openSettings.addEventListener("click", openSettings);
-  el.saveSettings.addEventListener("click", saveSettings);
-  el.providerSwitch.addEventListener("click", (e) => {
-    const btn = e.target.closest("[data-provider]");
-    if (!btn) return;
-    state.settings.provider = btn.dataset.provider;
-    renderProviderPanels();
-  });
-  el.settingsModal.addEventListener("click", (e) => {
-    if (e.target.hasAttribute("data-close")) closeSettings();
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && !el.settingsModal.classList.contains("hidden")) closeSettings();
-  });
+  }
+  if (images.length) {
+    event.preventDefault();
+    images.forEach(addImageFile);
+  }
 }
 
-async function pollScene() {
-  try {
-    const res = await fetch("/api/state");
-    const payload = await res.json();
-    state.sceneContext = payload.scene_context;
-  } catch {}
-  setTimeout(pollScene, 3000);
+function handleFilePick(event) {
+  const files = Array.from(event.target.files || []);
+  files.forEach(addImageFile);
+  event.target.value = "";
 }
 
-async function boot() {
-  bind();
-  loadChats();
-  renderChatList();
-  renderTitle();
-  renderMessages();
-  await loadState();
-  updateSendBtn();
-  pollScene();
+function addImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    state.pendingImages.push(reader.result);
+    renderImagePreview();
+    updateSendBtn();
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderImagePreview() {
+  el.imagePreview.innerHTML = "";
+  if (!state.pendingImages.length) {
+    el.imagePreview.classList.add("hidden");
+    return;
+  }
+
+  el.imagePreview.classList.remove("hidden");
+  state.pendingImages.forEach((src, index) => {
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "Pending attachment";
+
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.setAttribute("aria-label", "Remove image");
+    remove.textContent = "x";
+    remove.addEventListener("click", () => {
+      state.pendingImages.splice(index, 1);
+      renderImagePreview();
+      updateSendBtn();
+    });
+
+    thumb.appendChild(img);
+    thumb.appendChild(remove);
+    el.imagePreview.appendChild(thumb);
+  });
 }
 
 boot();

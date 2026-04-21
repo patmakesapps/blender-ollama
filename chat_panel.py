@@ -1,33 +1,18 @@
+import json
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+import webbrowser
+from pathlib import Path
+
 import bpy
-from bpy.props import PointerProperty, StringProperty
-from bpy.types import Operator, Panel, PropertyGroup
-
-from .ollama_integration import ask_ollama
+from bpy.types import Operator, Panel
 
 
-class OllamaChatProperties(PropertyGroup):
-    prompt: StringProperty(
-        name="Ask Ollama",
-        description="Question to send to the Ollama model",
-        default="",
-        subtype="NONE",
-        options={"TEXTEDIT_UPDATE"},
-    )
-    response: StringProperty(
-        name="Response",
-        description="Latest response returned by Ollama",
-        default="",
-    )
-    model_name: StringProperty(
-        name="Model",
-        description="Ollama model name to use for chat requests",
-        default="llama3.2",
-    )
-    history: StringProperty(
-        name="History",
-        description="Recent prompts and responses for this Blender session",
-        default="",
-    )
+COMPANION_URL = "http://127.0.0.1:8765"
+COMPANION_TIMEOUT_SECONDS = 8
 
 
 class OllamaChatPanel(Panel):
@@ -39,102 +24,117 @@ class OllamaChatPanel(Panel):
 
     def draw(self, context):
         layout = self.layout
-        props = context.scene.ollama_chat
 
-        layout.prop(props, "model_name")
-        layout.label(text="Prompt:")
-        layout.prop(props, "prompt", text="")
+        intro = layout.box()
+        intro.label(text="Launch the companion chat app.")
+        intro.label(text="The full chat experience runs outside Blender.")
 
-        actions = layout.row(align=True)
-        actions.operator("ollama.chat_send", icon="PLAY")
-        actions.operator("ollama.copy_response", icon="COPYDOWN")
+        layout.operator("ollama.open_companion", icon="URL")
 
-        layout.label(text="Response:")
-        response_box = layout.box()
-        response_text = props.response or "No response yet."
-        for line in response_text.splitlines() or ["No response yet."]:
-            response_box.label(text=line)
-
-        layout.label(text="Recent Chat:")
-        history_box = layout.box()
-        history_text = props.history or "No history yet."
-        for line in history_text.splitlines() or ["No history yet."]:
-            history_box.label(text=line)
+        notes = layout.box()
+        notes.label(text="What it does:")
+        notes.label(text="- Opens the premium chat UI in your browser")
+        notes.label(text="- Sends scene context from Blender")
+        notes.label(text="- Supports OpenAI and Ollama in one app")
 
 
-class OllamaChatSend(Operator):
-    bl_idname = "ollama.chat_send"
-    bl_label = "Send"
-    bl_description = "Send the current prompt and scene context to Ollama"
+class OllamaOpenCompanion(Operator):
+    bl_idname = "ollama.open_companion"
+    bl_label = "Open Assistant"
+    bl_description = "Start the local companion app and open it in your browser"
 
     def execute(self, context):
-        props = context.scene.ollama_chat
-        scene_context = get_scene_context(context)
-
-        if not props.prompt.strip():
-            self.report({"WARNING"}, "Enter a prompt before sending.")
-            return {"CANCELLED"}
-
         try:
-            response = ask_ollama(
-                prompt=props.prompt,
-                scene_context=scene_context,
-                model_name=props.model_name,
-            )
-            append_history(props, props.prompt, response)
-            props.response = response
-            props.prompt = ""
+            ensure_companion_server()
+            push_scene_context(context)
+            webbrowser.open(COMPANION_URL)
+            self.report({"INFO"}, "Opened the Blender companion app.")
             return {"FINISHED"}
         except Exception as exc:
-            props.response = f"Error: {exc}"
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
 
 
-class OllamaCopyResponse(Operator):
-    bl_idname = "ollama.copy_response"
-    bl_label = "Copy Response"
-    bl_description = "Copy the latest Ollama response to the clipboard"
+def ensure_companion_server():
+    if is_companion_running():
+        return
 
-    def execute(self, context):
-        response = context.scene.ollama_chat.response.strip()
-        if not response:
-            self.report({"WARNING"}, "There is no response to copy.")
-            return {"CANCELLED"}
+    script_path = Path(__file__).resolve().parent / "companion" / "server.py"
+    if not script_path.exists():
+        raise RuntimeError(f"Companion server not found: {script_path}")
 
-        context.window_manager.clipboard = response
-        self.report({"INFO"}, "Response copied to clipboard.")
-        return {"FINISHED"}
+    creationflags = 0
+    if sys.platform.startswith("win"):
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+    subprocess.Popen(
+        [sys.executable, str(script_path)],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        creationflags=creationflags,
+        close_fds=True,
+    )
+
+    deadline = time.time() + COMPANION_TIMEOUT_SECONDS
+    while time.time() < deadline:
+        if is_companion_running():
+            return
+        time.sleep(0.25)
+
+    raise RuntimeError("The companion app did not start in time.")
+
+
+def is_companion_running():
+    try:
+        with urllib.request.urlopen(f"{COMPANION_URL}/api/state", timeout=1):
+            return True
+    except Exception:
+        return False
+
+
+def push_scene_context(context):
+    payload = json.dumps({"scene_context": get_scene_context(context)}).encode("utf-8")
+    request = urllib.request.Request(
+        f"{COMPANION_URL}/api/scene",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=3):
+            return
+    except urllib.error.URLError as exc:
+        raise RuntimeError("Could not send scene context to the companion app.") from exc
 
 
 def get_scene_context(context):
     selected_names = [obj.name for obj in context.selected_objects]
     active_name = context.active_object.name if context.active_object else "None"
-    return f"Active object: {active_name}\nSelected objects: {selected_names}"
+    object_count = len(context.scene.objects)
+    mode = context.mode
 
-
-def append_history(props, prompt, response):
-    new_entry = f"You: {prompt}\nOllama: {response}"
-    entries = [entry for entry in props.history.split("\n---\n") if entry.strip()]
-    entries.append(new_entry)
-    props.history = "\n---\n".join(entries[-5:])
+    return {
+        "scene_name": context.scene.name,
+        "active_object": active_name,
+        "selected_objects": selected_names,
+        "object_count": object_count,
+        "mode": mode,
+    }
 
 
 classes = (
-    OllamaChatProperties,
     OllamaChatPanel,
-    OllamaChatSend,
-    OllamaCopyResponse,
+    OllamaOpenCompanion,
 )
 
 
 def register():
     for cls in classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.ollama_chat = PointerProperty(type=OllamaChatProperties)
 
 
 def unregister():
-    del bpy.types.Scene.ollama_chat
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
